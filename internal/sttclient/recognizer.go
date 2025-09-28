@@ -34,9 +34,9 @@ func NewRecognizer() (*Recognizer, error) {
 			NumThreads: 1,
 			Debug:      1,
 		},
-		EnableEndpoint:          1, // Use int instead of bool
-		Rule1MinTrailingSilence: 1.2,
-		Rule2MinTrailingSilence: 0.6,
+		EnableEndpoint:          1,   // Use int instead of bool
+		Rule1MinTrailingSilence: 2.0, // 延长句末静音容忍时间
+		Rule2MinTrailingSilence: 0.8, // 延长句中停顿容忍时间
 		Rule3MinUtteranceLength: 300, // Roughly 3-4 syllables
 	}
 

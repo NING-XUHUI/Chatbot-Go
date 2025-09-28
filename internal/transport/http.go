@@ -11,10 +11,53 @@ import (
 	"Chatbot-Go/internal/llm"
 	"Chatbot-Go/internal/tts"
 
+	"sync"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/generative-ai-go/genai"
+	"github.com/gorilla/websocket"
 	"google.golang.org/api/iterator"
 )
+
+// InterruptManager manages the interruption signals.
+type InterruptManager struct {
+	mu          sync.Mutex
+	interrupted map[string]bool
+	globalStop  bool // 全局停止标志，可以停止所有正在进行的TTS
+}
+
+func (im *InterruptManager) Set(turnID string) {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	im.interrupted[turnID] = true
+	// 设置全局停止标志，立即停止所有正在进行的TTS
+	im.globalStop = true
+	log.Printf("设置全局停止标志，turnID: %s", turnID)
+}
+
+func (im *InterruptManager) Check(turnID string) bool {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	// 检查特定turnID或全局停止标志
+	return im.interrupted[turnID] || im.globalStop
+}
+
+func (im *InterruptManager) Clear(turnID string) {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	delete(im.interrupted, turnID)
+}
+
+func (im *InterruptManager) ClearGlobalStop() {
+	im.mu.Lock()
+	defer im.mu.Unlock()
+	im.globalStop = false
+	log.Printf("清除全局停止标志")
+}
+
+var interruptManager = &InterruptManager{
+	interrupted: make(map[string]bool),
+}
 
 // flushWriter is a helper to flush the response writer after every write.
 type flushWriter struct {
@@ -29,6 +72,20 @@ func (fw *flushWriter) Write(p []byte) (n int, err error) {
 	}
 	fw.flusher.Flush()
 	return n, nil
+}
+
+// interruptableWriter wraps a writer and checks for interruption.
+type interruptableWriter struct {
+	writer io.Writer
+	turnID string
+}
+
+func (iw *interruptableWriter) Write(p []byte) (n int, err error) {
+	if interruptManager.Check(iw.turnID) {
+		log.Printf("Interrupt detected for turnID: %s. Stopping stream.", iw.turnID)
+		return 0, fmt.Errorf("stream interrupted for turnID %s", iw.turnID)
+	}
+	return iw.writer.Write(p)
 }
 
 func llmHandler(c *gin.Context) {
@@ -112,19 +169,28 @@ func RegisterTransportRoutes(r *gin.Engine) {
 	r.POST("/stream/tts", ttsHandler) // This will be handled by Next.js API route
 	r.GET("/ws/stt", sttHandler)
 	r.GET("/ping", pingHandler)
+	r.GET("/ws/interrupt", interruptHandler)
 }
 
 // ttsHandler is no longer used from here.
 func ttsHandler(c *gin.Context) {
 	var reqBody struct {
-		Text string `json:"text"`
+		Text   string `json:"text"`
+		TurnID string `json:"turn_id"`
 	}
 	if err := c.ShouldBindJSON(&reqBody); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
 		return
 	}
 
-	log.Printf("Received text for TTS: '%s'", reqBody.Text)
+	turnID := reqBody.TurnID
+
+	// 清除全局停止标志，允许新的TTS请求开始
+	interruptManager.ClearGlobalStop()
+
+	defer interruptManager.Clear(turnID) // Ensure cleanup after the request is done.
+
+	log.Printf("Received text for TTS: '%s' for turnID: %s", reqBody.Text, turnID)
 	if reqBody.Text == "" {
 		log.Println("TTS request has empty text, returning.")
 		c.Status(http.StatusBadRequest)
@@ -151,9 +217,47 @@ func ttsHandler(c *gin.Context) {
 		flusher: flusher,
 	}
 
-	err = client.GenerateStream(reqBody.Text, flushingWriter)
+	interruptWriter := &interruptableWriter{
+		writer: flushingWriter,
+		turnID: turnID,
+	}
+
+	err = client.GenerateStream(reqBody.Text, interruptWriter)
 	if err != nil {
-		log.Printf("Error generating TTS stream: %v", err)
+		// We expect an "interrupted" error here, so we don't need to log it as a critical failure.
+		if err.Error() != fmt.Sprintf("stream interrupted for turnID %s", turnID) {
+			log.Printf("Error generating TTS stream: %v", err)
+		}
+	}
+}
+
+func interruptHandler(c *gin.Context) {
+	conn, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		log.Printf("Failed to upgrade interrupt WebSocket: %v", err)
+		return
+	}
+	defer conn.Close()
+	log.Println("Client connected to interrupt WebSocket.")
+
+	for {
+		_, p, err := conn.ReadMessage()
+		if err != nil {
+			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
+				log.Printf("Interrupt WebSocket error: %v", err)
+			}
+			break
+		}
+
+		var msg struct {
+			Action string `json:"action"`
+			TurnID string `json:"turn_id"`
+		}
+
+		if err := json.Unmarshal(p, &msg); err == nil && msg.Action == "interrupt" {
+			log.Printf("Received interrupt signal for turn_id: %s", msg.TurnID)
+			interruptManager.Set(msg.TurnID)
+		}
 	}
 }
 
