@@ -1,0 +1,60 @@
+# Go binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Project-specific binaries
+/cmd/gateway/gateway
+/cmd/responder/responder
+/cmd/stt/stt
+
+# Web (Next.js)
+/web/node_modules/
+/web/.next/
+/web/out/
+/web/.env
+/web/.env.local
+/web/.env.development.local
+/web/.env.test.local
+/web/.env.production.local
+/web/build
+/web/.vercel
+/web/*.tsbuildinfo
+/web/next-env.d.ts
+
+# dependencies in web
+/web/.pnp
+/web/.pnp.*
+/web/.yarn/*
+!/web/.yarn/patches
+!/web/.yarn/plugins
+!/web/.yarn/releases
+!/web/.yarn/versions
+
+# testing
+/web/coverage
+
+# misc
+/web/*.pem
+
+# debug
+/web/npm-debug.log*
+/web/yarn-debug.log*
+/web/yarn-error.log*
+/web/.pnpm-debug.log*
+
+# OS-generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Log files
+*.log
